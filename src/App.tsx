@@ -35,15 +35,20 @@ const DEFAULT_OPTIONS: Options = {
 export function App() {
   const [profileFile, setProfileFile] = useState<File | null>(null);
   const [pathFile, setPathFile] = useState<File | null>(null);
+  const [removerFile, setRemoverFile] = useState<File | null>(null);
   const [profileText, setProfileText] = useState<string | null>(null);
   const [pathText, setPathText] = useState<string | null>(null);
+  const [removerText, setRemoverText] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<ProfileResult | null>(null);
   const [path, setPath] = useState<PathResult | null>(null);
+  const [remover, setRemover] = useState<ProfileResult | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [pathError, setPathError] = useState<string | null>(null);
+  const [removerError, setRemoverError] = useState<string | null>(null);
   const [profileIssues, setProfileIssues] = useState<ParseIssue[]>([]);
   const [pathIssues, setPathIssues] = useState<ParseIssue[]>([]);
+  const [removerIssues, setRemoverIssues] = useState<ParseIssue[]>([]);
   const [unitMismatch, setUnitMismatch] = useState<string | null>(null);
 
   const [opts, setOpts] = useState<Options>(DEFAULT_OPTIONS);
@@ -63,6 +68,13 @@ export function App() {
     if (!pathFile) return;
     pathFile.text().then(setPathText).catch((e) => setPathError(String(e)));
   }, [pathFile]);
+  useEffect(() => {
+    if (!removerFile) {
+      setRemoverText(null);
+      return;
+    }
+    removerFile.text().then(setRemoverText).catch((e) => setRemoverError(String(e)));
+  }, [removerFile]);
 
   // Parse profile whenever its text or the relevant option changes.
   useEffect(() => {
@@ -113,6 +125,35 @@ export function App() {
     }
   }, [pathText, opts.chordTolerance, opts.splineSamplesPerSpan, opts.stitchTolerance]);
 
+  // Parse the remover profile (optional) with the same settings as the main
+  // profile. Clearing the upload clears the parse state.
+  useEffect(() => {
+    if (!removerText) {
+      setRemover(null);
+      setRemoverError(null);
+      setRemoverIssues([]);
+      return;
+    }
+    try {
+      const r = parseProfileDxf(removerText, {
+        chordTolerance: opts.chordTolerance,
+        stitchTolerance: opts.stitchTolerance
+      });
+      setRemover(r);
+      setRemoverError(null);
+      setRemoverIssues(r.issues);
+    } catch (err) {
+      setRemover(null);
+      if (err instanceof ProfileParseError) {
+        setRemoverError(err.message);
+        setRemoverIssues(err.issues);
+      } else {
+        setRemoverError(err instanceof Error ? err.message : String(err));
+        setRemoverIssues([]);
+      }
+    }
+  }, [removerText, opts.chordTolerance, opts.stitchTolerance]);
+
   // Unit compatibility check (refuse on mismatch per product spec).
   useEffect(() => {
     if (!profile || !path) {
@@ -122,25 +163,33 @@ export function App() {
     const compat = checkUnitsCompatible(profile.unit, path.unit);
     if (!compat.ok) {
       setUnitMismatch(compat.reason ?? 'unit mismatch');
-    } else {
-      setUnitMismatch(null);
+      return;
     }
-  }, [profile, path]);
+    if (remover) {
+      const pr = checkUnitsCompatible(profile.unit, remover.unit);
+      if (!pr.ok) {
+        setUnitMismatch(pr.reason ?? 'remover unit mismatch');
+        return;
+      }
+    }
+    setUnitMismatch(null);
+  }, [profile, path, remover]);
 
   const canEmit = profile !== null && path !== null && unitMismatch === null;
 
   const scadCode = useMemo(() => {
     if (!profile || !path || unitMismatch) return '';
     const baseName = (pathFile?.name ?? 'sweep').replace(/\.[Dd][Xx][Ff]$/, '');
+    const rem = remover ?? undefined;
     switch (emitter) {
       case 'bosl2':
-        return emitBosl2(profile, path, { name: baseName });
+        return emitBosl2(profile, path, { name: baseName, remover: rem });
       case 'hull':
-        return emitHull(profile, path);
+        return emitHull(profile, path, { remover: rem });
       case 'prism':
-        return emitPrism(profile, path);
+        return emitPrism(profile, path, { remover: rem });
     }
-  }, [profile, path, emitter, pathFile, unitMismatch]);
+  }, [profile, path, remover, emitter, pathFile, unitMismatch]);
 
   const profileLines = profile
     ? [{ points: profile.vertices as Vec2[], closed: true, stroke: 'var(--accent)' }]
@@ -173,6 +222,16 @@ export function App() {
       message: `path declares ${path.unit.name}; Roseriser targets millimetres — verify the output scale`
     });
   }
+  if (remover && isNonMillimetre(remover.unit)) {
+    unitWarnings.push({
+      severity: 'warning',
+      message: `remover profile declares ${remover.unit.name}; Roseriser targets millimetres — verify the output scale`
+    });
+  }
+
+  const removerLines = remover
+    ? [{ points: remover.vertices as Vec2[], closed: true, stroke: 'var(--warn)' }]
+    : [];
 
   return (
     <div className="app">
@@ -206,6 +265,12 @@ export function App() {
           file={pathFile}
           onFile={setPathFile}
           helpText="LINE / ARC / CIRCLE / POLYLINE / SPLINE"
+        />
+        <FileDrop
+          label="Remover profile DXF (optional)"
+          file={removerFile}
+          onFile={setRemoverFile}
+          helpText="sweep, then subtract from main — carves a groove"
         />
       </section>
 
@@ -295,6 +360,16 @@ export function App() {
         />
       </section>
 
+      {(removerFile || remover || removerError) && (
+        <section className="app__previews app__previews--single">
+          <SvgPreview
+            title={`Remover${remover ? ` · ${remover.vertices.length} vertices` : ''}`}
+            lines={removerLines}
+            emptyText="Drop a remover-profile DXF to preview."
+          />
+        </section>
+      )}
+
       {unitMismatch && (
         <ErrorPanel
           title="Unit mismatch — refusing to emit"
@@ -304,6 +379,7 @@ export function App() {
       )}
       <ErrorPanel title="Profile" fatal={profileError} issues={profileIssues} />
       <ErrorPanel title="Path" fatal={pathError} issues={pathIssues} />
+      <ErrorPanel title="Remover profile" fatal={removerError} issues={removerIssues} />
       {unitWarnings.length > 0 && <ErrorPanel title="Units" issues={unitWarnings} />}
 
       {canEmit && (

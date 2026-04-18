@@ -80,12 +80,16 @@ a { color: var(--accent); }
 
 .app__drops {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
+}
+@media (max-width: 960px) {
+  .app__drops { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 720px) {
   .app__drops { grid-template-columns: 1fr; }
 }
+.app__previews--single { grid-template-columns: 1fr; min-height: 220px; }
 
 .filedrop {
   border: 2px dashed var(--border);

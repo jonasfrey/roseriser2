@@ -20,6 +20,23 @@ function makeProfile(): ProfileResult {
   };
 }
 
+function makeRemoverProfile(): ProfileResult {
+  // Smaller groove rectangle centered on the main profile.
+  const verts: Vec2[] = [
+    [-0.25, -0.1],
+    [0.25, -0.1],
+    [0.25, 0.1],
+    [-0.25, 0.1]
+  ];
+  return {
+    vertices: verts,
+    closed: true,
+    unit: { code: 4, name: 'mm', isMm: true, isUnitless: false },
+    bbox: { min: [-0.25, -0.1], max: [0.25, 0.1] },
+    issues: []
+  };
+}
+
 function makePath(closed: boolean): PathResult {
   const pts: Vec3[] = [
     [0, 0, 0],
@@ -194,10 +211,11 @@ describe('multi-component emission', () => {
 
   it('hull emits one sweep module per component', () => {
     const scad = emitHull(makeProfile(), makeMulti());
-    expect(scad).toContain('module sweep_1()');
-    expect(scad).toContain('module sweep_2()');
-    expect(scad).toContain('sweep_1();');
-    expect(scad).toContain('sweep_2();');
+    // sweep modules are now parameterised on the polygon variable
+    expect(scad).toContain('module sweep_1(poly)');
+    expect(scad).toContain('module sweep_2(poly)');
+    expect(scad).toContain('sweep_1(polygon_points);');
+    expect(scad).toContain('sweep_2(polygon_points);');
   });
 
   it('prism emits one segments list per component and no BOSL2 include', () => {
@@ -206,7 +224,7 @@ describe('multi-component emission', () => {
     expect(scad).not.toContain('path_sweep(');
     expect(scad).toContain('segments_1 = [');
     expect(scad).toContain('segments_2 = [');
-    expect(scad).toContain('module segment_prism(seg)');
+    expect(scad).toContain('module segment_prism(seg, poly)');
     // Component 2 is closed → its segments list should wrap back to the start.
     const seg2Match = scad.match(/segments_2 = \[([\s\S]*?)\];/);
     expect(seg2Match).not.toBeNull();
@@ -248,5 +266,51 @@ describe('emitPrism', () => {
     // Open path, 3 points → 2 segments.
     const segMatch = scad.match(/segments_1 = \[([\s\S]*?)\];/);
     expect(segMatch?.[1].split('\n').filter((l) => l.trim().startsWith('[[')).length).toBe(2);
+  });
+});
+
+describe('remover profile (difference)', () => {
+  it('BOSL2 emits a difference() block with both polygon lists', () => {
+    const scad = emitBosl2(makeProfile(), makePath(true), { remover: makeRemoverProfile() });
+    expect(scad).toContain('polygon_points = [');
+    expect(scad).toContain('remover_polygon = [');
+    expect(scad).toContain('difference() {');
+    // Both polygon variables are passed into path_sweep calls.
+    expect(scad).toMatch(/path_sweep\(polygon_points,/);
+    expect(scad).toMatch(/path_sweep\(remover_polygon,/);
+  });
+
+  it('hull emits difference() with both polygon lists and shared prof_at', () => {
+    const scad = emitHull(makeProfile(), makePath(true), { remover: makeRemoverProfile() });
+    expect(scad).toContain('polygon_points = [');
+    expect(scad).toContain('remover_polygon = [');
+    expect(scad).toContain('difference() {');
+    // prof_at now takes a poly arg.
+    expect(scad).toMatch(/module prof_at\(p, ang, poly\)/);
+    // The sweep module is invoked with each polygon variable once.
+    expect(scad).toMatch(/sweep\(polygon_points\)/);
+    expect(scad).toMatch(/sweep\(remover_polygon\)/);
+  });
+
+  it('prism emits difference() with parameterised segment_prism', () => {
+    const scad = emitPrism(makeProfile(), makePath(true), { remover: makeRemoverProfile() });
+    expect(scad).toContain('polygon_points = [');
+    expect(scad).toContain('remover_polygon = [');
+    expect(scad).toContain('difference() {');
+    expect(scad).toMatch(/module segment_prism\(seg, poly\)/);
+    expect(scad).toMatch(/segment_prism\(s, polygon_points\)/);
+    expect(scad).toMatch(/segment_prism\(s, remover_polygon\)/);
+  });
+
+  it('without a remover, emitters do NOT wrap in difference()', () => {
+    const bosl = emitBosl2(makeProfile(), makePath(true));
+    const hull = emitHull(makeProfile(), makePath(true));
+    const prism = emitPrism(makeProfile(), makePath(true));
+    expect(bosl).not.toContain('difference() {');
+    expect(hull).not.toContain('difference() {');
+    expect(prism).not.toContain('difference() {');
+    expect(bosl).not.toContain('remover_polygon');
+    expect(hull).not.toContain('remover_polygon');
+    expect(prism).not.toContain('remover_polygon');
   });
 });
